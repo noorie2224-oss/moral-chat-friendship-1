@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>도덕 AI 도우미 — 공감</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    font-family: "Apple SD Gothic Neo", "Malgun Gothic", "Noto Sans KR", sans-serif;
+    background: #eef3f8;
+    color: #1f2933;
+    display: flex;
+    justify-content: center;
+  }
+  .app {
+    width: 100%;
+    max-width: 760px;
+    height: 100%;
+    height: 100dvh;
+    display: flex;
+    flex-direction: column;
+    background: #ffffff;
+    box-shadow: 0 0 12px rgba(0, 0, 0, 0.08);
+  }
+  header {
+    padding: 12px 16px 10px;
+    background: #3b82c4;
+    color: #ffffff;
+  }
+  .top-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  h1 { font-size: 1.15rem; margin: 0; }
+  #saveBtn {
+    flex-shrink: 0;
+    border: 1px solid #ffffff;
+    background: transparent;
+    color: #ffffff;
+    border-radius: 8px;
+    padding: 6px 10px;
+    font-size: 0.85rem;
+    cursor: pointer;
+  }
+  #saveBtn:hover { background: rgba(255, 255, 255, 0.2); }
+  .notice { margin: 6px 0 0; font-size: 0.85rem; line-height: 1.4; }
+  #chat {
+    flex: 1;
+    overflow-y: auto;
+    padding: 14px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    background: #f7f9fc;
+  }
+  .row { display: flex; }
+  .row.user { justify-content: flex-end; }
+  .row.ai { justify-content: flex-start; }
+  .bubble {
+    max-width: 85%;
+    padding: 10px 14px;
+    border-radius: 16px;
+    font-size: 1.02rem;
+    line-height: 1.6;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .user .bubble { background: #ffe58f; border-bottom-right-radius: 4px; }
+  .ai .bubble { background: #ffffff; border: 1px solid #d9e2ec; border-bottom-left-radius: 4px; }
+  .bubble.thinking { color: #7b8794; font-style: italic; }
+  .bubble.error { color: #d62828; border-color: #f2b8b8; background: #fff5f5; }
+  .input-area {
+    display: flex;
+    gap: 8px;
+    padding: 10px 12px;
+    padding-bottom: calc(10px + env(safe-area-inset-bottom, 0px));
+    border-top: 1px solid #d9e2ec;
+    background: #ffffff;
+  }
+  #input {
+    flex: 1;
+    resize: none;
+    border: 1px solid #b6c2cf;
+    border-radius: 12px;
+    padding: 10px 12px;
+    font-size: 1rem;
+    font-family: inherit;
+    line-height: 1.4;
+    min-height: 48px;
+    max-height: 140px;
+  }
+  #input:focus { outline: 2px solid #3b82c4; border-color: #3b82c4; }
+  #sendBtn {
+    flex-shrink: 0;
+    border: none;
+    background: #3b82c4;
+    color: #ffffff;
+    border-radius: 12px;
+    padding: 0 18px;
+    font-size: 1rem;
+    font-weight: bold;
+    cursor: pointer;
+  }
+  #sendBtn:disabled { background: #a8b8c8; cursor: not-allowed; }
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <div class="top-row">
+      <h1>도덕 AI 도우미 — 공감</h1>
+      <button id="saveBtn" type="button">대화 저장하기</button>
+    </div>
+    <p class="notice">이 대화 상대는 사람이 아닌 AI예요. 이름·전화번호 같은 개인정보는 쓰지 마세요.</p>
+  </header>
+
+  <div id="chat" aria-live="polite"></div>
+
+  <div class="input-area">
+    <textarea id="input" rows="2" maxlength="1000" placeholder="여기에 글을 써 주세요 (Enter: 보내기, Shift+Enter: 줄바꿈)"></textarea>
+    <button id="sendBtn" type="button">보내기</button>
+  </div>
+</div>
+
+<script>
+(function () {
+  var TITLE = "도덕 AI 도우미 — 공감";
+  var GREETING = "안녕하세요, 저는 사람이 아니라 여러분의 도덕 공부를 도와주는 AI예요. 이름이나 전화번호 같은 개인정보는 쓰지 않기로 약속해 주세요.";
+
+  var chat = document.getElementById("chat");
+  var input = document.getElementById("input");
+  var sendBtn = document.getElementById("sendBtn");
+  var saveBtn = document.getElementById("saveBtn");
+
+  // 서버로 보내는 대화 (첫 인사는 화면에만 보이므로 여기에 넣지 않는다)
+  var messages = [];
+  var busy = false;
+
+  // **굵은 글씨**만 안전하게 굵게 보여 준다 (HTML은 해석하지 않는다)
+  function fillText(el, text) {
+    var parts = String(text).split("**");
+    for (var i = 0; i < parts.length; i++) {
+      if (parts[i] === "") continue;
+      if (i % 2 === 1 && i < parts.length - 1) {
+        var strong = document.createElement("strong");
+        strong.textContent = parts[i];
+        el.appendChild(strong);
+      } else {
+        var prefix = (i % 2 === 1) ? "**" : "";
+        el.appendChild(document.createTextNode(prefix + parts[i]));
+      }
+    }
+  }
+
+  function addBubble(who, text, extraClass) {
+    var row = document.createElement("div");
+    row.className = "row " + who;
+    var bubble = document.createElement("div");
+    bubble.className = "bubble" + (extraClass ? " " + extraClass : "");
+    if (who === "ai" && !extraClass) {
+      fillText(bubble, text);
+    } else {
+      bubble.textContent = text;
+    }
+    row.appendChild(bubble);
+    chat.appendChild(row);
+    chat.scrollTop = chat.scrollHeight;
+    return row;
+  }
+
+  function showError(message) {
+    addBubble("ai", message, "error");
+  }
+
+  async function send() {
+    if (busy) return;
+    var text = input.value.trim();
+    if (!text) return;
+
+    busy = true;
+    sendBtn.disabled = true;
+    input.value = "";
+
+    var userRow = addBubble("user", text);
+    messages.push({ role: "user", content: text });
+    var thinkingRow = addBubble("ai", "생각 중...", "thinking");
+
+    function rollback(errorText) {
+      thinkingRow.remove();
+      userRow.remove();
+      messages.pop();
+      input.value = text;
+      showError(errorText + "\n(보낸 글은 입력창에 다시 넣어 두었어요. 다시 보내 보세요.)");
+    }
+
+    try {
+      var response;
+      try {
+        response = await fetch("/api/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ messages: messages })
+        });
+      } catch (networkError) {
+        rollback("인터넷 연결이 불안정하거나 서버에 연결하지 못했어요.");
+        return;
+      }
+
+      var raw = await response.text();
+      var data = null;
+      try {
+        data = JSON.parse(raw);
+      } catch (parseError) {
+        data = null;
+      }
+
+      if (!data) {
+        rollback("서버 오류(" + response.status + ")\n" + raw.slice(0, 200));
+        return;
+      }
+      if (!response.ok || data.error) {
+        rollback(data.error ? String(data.error) : "서버 오류(" + response.status + ")");
+        return;
+      }
+      if (typeof data.reply !== "string" || data.reply === "") {
+        rollback("AI의 답을 받지 못했어요.");
+        return;
+      }
+
+      thinkingRow.remove();
+      addBubble("ai", data.reply);
+      messages.push({ role: "assistant", content: data.reply });
+    } finally {
+      busy = false;
+      sendBtn.disabled = false;
+      input.focus();
+    }
+  }
+
+  function saveConversation() {
+    if (messages.length === 0) {
+      alert("아직 저장할 대화가 없어요. 먼저 AI와 대화를 나눠 보세요.");
+      return;
+    }
+    var now = new Date();
+    var lines = [];
+    lines.push(TITLE);
+    lines.push("저장한 때: " + now.toLocaleString("ko-KR"));
+    lines.push("");
+    lines.push("[AI]");
+    lines.push(GREETING);
+    lines.push("");
+    for (var i = 0; i < messages.length; i++) {
+      lines.push(messages[i].role === "user" ? "[학생]" : "[AI]");
+      lines.push(messages[i].content);
+      lines.push("");
+    }
+    var blob = new Blob([lines.join("\r\n")], { type: "text/plain;charset=utf-8" });
+    var url = URL.createObjectURL(blob);
+    var link = document.createElement("a");
+    link.href = url;
+    link.download = "도덕AI도우미_대화.txt";
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+  }
+
+  input.addEventListener("keydown", function (e) {
+    // 한글을 쓰는 중(조합 중)에는 Enter가 글자 확정이므로 보내지 않는다
+    if (e.key === "Enter" && !e.shiftKey && !e.isComposing && e.keyCode !== 229) {
+      e.preventDefault();
+      send();
+    }
+  });
+  sendBtn.addEventListener("click", send);
+  saveBtn.addEventListener("click", saveConversation);
+
+  addBubble("ai", GREETING);
+  input.focus();
+})();
+</script>
+</body>
+</html>
